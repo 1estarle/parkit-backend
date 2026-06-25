@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parkit-backend
+spec:
+  replicas: 3 # <- Esto cumple con el requisito de las 3 réplicas
+  selector:
+    matchLabels:
+      app: parkit-backend
+  template:
+    metadata:
+      labels:
+        app: parkit-backend
+    spec:
+      containers:
+        - name: parkit-node
+          image: postgres/parkit-backend:latest
+          ports:
+            - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: parkit-service
+spec:
+  type: LoadBalancer # <- Expone la app para que Android se conecte
+  selector:
+    app: parkit-backend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000

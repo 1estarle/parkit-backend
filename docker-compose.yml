@@ -1,0 +1,26 @@
+version: "3.8"
+services:
+  backend:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgres://postgres:1234@db:5432/parkit
+    depends_on:
+      - db
+    volumes:
+      - ./uploads:/usr/src/app/uploads # Mantiene vivas las imágenes de los estacionamientos
+
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=1234
+      - POSTGRES_DB=parkit
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
