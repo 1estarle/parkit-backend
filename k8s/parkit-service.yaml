@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: parkit-backend-service
+spec:
+  type: NodePort # Balanceador de carga para exponer la API hacia la App de Android
+  selector:
+    app: parkit-backend
+  ports:
+    - protocol: TCP
+      port: 3000 # Puerto expuesto en la Nube
+      targetPort: 3000 # Puerto interno del contenedor Node.js
