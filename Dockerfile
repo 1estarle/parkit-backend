@@ -8,11 +8,14 @@ COPY . .
 # Etapa 2: Producción (Imagen final ligera)
 FROM node:18-alpine
 WORKDIR /usr/src/app
-# Solo copiamos lo necesario de la etapa anterior
+
 COPY --from=builder /usr/src/app/package*.json ./
 COPY --from=builder /usr/src/app/node_modules ./node_modules
 COPY --from=builder /usr/src/app/server.js ./server.js
-# Crear carpeta uploads para las fotos de ParkIt
+
+COPY --from=builder /usr/src/app/config ./config
+COPY --from=builder /usr/src/app/initial_data.js ./initial_data.js
+
 RUN mkdir -p uploads 
 
 EXPOSE 3000

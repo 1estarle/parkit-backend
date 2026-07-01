@@ -9,6 +9,16 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.use((req, res, next) => {
+  // Soporte para clientes HTTP (como en el emulador Android) que concatenan /api/api/
+  if (req.url.startsWith("/api/api/")) {
+    console.log(`🔄 Reescribiendo URL: ${req.url} -> ${req.url.substring(4)}`);
+    req.url = req.url.substring(4);
+  }
+  console.log(`📢 ¡Llegó algo! Método: ${req.method} | URL: ${req.url}`);
+  next();
+});
+
 // 1. Configuración de Multer
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -158,6 +168,10 @@ app.get("/api/spots", async (req, res) => {
   console.log("📍 Consultando estacionamientos disponibles en PostgreSQL...");
   try {
     const query = "SELECT * FROM parking_spots WHERE is_available = true";
+    const test = await pool.query(
+      "SELECT current_database(), current_schema()",
+    );
+    console.log(test.rows); // Verificar la base de datos y esquema actual
     const result = await pool.query(query);
 
     // Mapeo de compatibilidad: Transforma snake_case de la BD a camelCase del Frontend
@@ -178,6 +192,9 @@ app.get("/api/spots", async (req, res) => {
       reviews: 0,
       amenities: ["Seguridad 24/7", "Techado"],
       image_url: spot.image_url,
+      imageUrl: spot.image_url,
+      image: spot.image_url,
+      images: spot.image_url ? [spot.image_url] : [],
     }));
 
     res.json(formattedSpots);
@@ -205,10 +222,35 @@ app.post("/api/spots", upload.single("image"), async (req, res) => {
     } = req.body;
 
     // Si el usuario subió foto, Multer la deja en req.file. Armamos la URL local:
-    const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    const imageUrl = req.file
+      ? `http://10.0.2.2:3000/uploads/${req.file.filename}`
+      : null;
 
     // Validar que tengamos el ID por defecto en caso de problemas
-    const cleanOwnerId = ownerId ? String(ownerId).replace("user_", "") : 1;
+    const cleanOwnerId = ownerId ? String(ownerId).replace("user_", "") : "1";
+    let parsedOwnerId = parseInt(cleanOwnerId);
+    if (isNaN(parsedOwnerId)) {
+      parsedOwnerId = 1;
+    }
+
+    // Verificar si el usuario existe en la BD para evitar violación de clave foránea
+    try {
+      const userCheck = await pool.query("SELECT id FROM users WHERE id = $1", [parsedOwnerId]);
+      if (userCheck.rows.length === 0) {
+        parsedOwnerId = 1; // Fallback al usuario demo sembrado
+      }
+    } catch (err) {
+      parsedOwnerId = 1;
+    }
+
+    // Saneamiento de coordenadas y precio
+    let parsedLat = parseFloat(latitude);
+    let parsedLon = parseFloat(longitude);
+    let parsedPrice = parseInt(pricePerMinute);
+
+    if (isNaN(parsedLat)) parsedLat = -33.4372;
+    if (isNaN(parsedLon)) parsedLon = -70.6506;
+    if (isNaN(parsedPrice)) parsedPrice = 500;
 
     // 4. Inserción en Base de Datos (Incluyendo la nueva columna image_url)
     const query = `
@@ -217,13 +259,13 @@ app.post("/api/spots", upload.single("image"), async (req, res) => {
         `;
 
     const values = [
-      parseInt(cleanOwnerId),
-      title,
-      description,
-      address,
-      parseFloat(latitude),
-      parseFloat(longitude),
-      parseInt(pricePerMinute),
+      parsedOwnerId,
+      title || "Estacionamiento sin título",
+      description || "",
+      address || "Dirección no especificada",
+      parsedLat,
+      parsedLon,
+      parsedPrice,
       imageUrl,
     ];
 
@@ -236,6 +278,127 @@ app.post("/api/spots", upload.single("image"), async (req, res) => {
       .json({ error: "Error interno al guardar el estacionamiento" });
   }
 });
+
+// =========================================================================
+// ENDPOINT: Actualizar Estacionamiento (Editar)
+// =========================================================================
+const handleUpdateSpot = async (req, res) => {
+  try {
+    const spotId = req.params.id || req.body.id;
+    if (!spotId) {
+      return res.status(400).json({ error: "ID de estacionamiento no proporcionado" });
+    }
+    const cleanSpotId = String(spotId).replace("spot_", "");
+    console.log(`📝 Solicitud de actualización para el spot ID: ${cleanSpotId}`);
+
+    const {
+      title,
+      description,
+      address,
+      latitude,
+      longitude,
+      pricePerMinute,
+      availability,
+      is_available,
+    } = req.body;
+
+    // 1. Verificar si el estacionamiento existe en la base de datos
+    const checkSpot = await pool.query("SELECT * FROM parking_spots WHERE id = $1", [parseInt(cleanSpotId)]);
+    if (checkSpot.rows.length === 0) {
+      return res.status(404).json({ error: "Estacionamiento no encontrado" });
+    }
+    const existingSpot = checkSpot.rows[0];
+
+    // 2. Determinar la URL de la imagen (mantener la anterior si no se sube una nueva)
+    let imageUrl = existingSpot.image_url;
+    if (req.file) {
+      imageUrl = `http://10.0.2.2:3000/uploads/${req.file.filename}`;
+    } else if (req.body.image_url) {
+      imageUrl = req.body.image_url;
+    } else if (req.body.image) {
+      imageUrl = req.body.image;
+    } else if (req.body.imageUrl) {
+      imageUrl = req.body.imageUrl;
+    }
+
+    // 3. Fallbacks seguros a los valores existentes
+    const updatedTitle = title !== undefined ? title : existingSpot.title;
+    const updatedDescription = description !== undefined ? description : existingSpot.description;
+    const updatedAddress = address !== undefined ? address : existingSpot.address;
+
+    let updatedLat = latitude !== undefined ? parseFloat(latitude) : existingSpot.latitude;
+    let updatedLon = longitude !== undefined ? parseFloat(longitude) : existingSpot.longitude;
+    let updatedPrice = pricePerMinute !== undefined ? parseInt(pricePerMinute) : existingSpot.price_per_minute;
+
+    if (isNaN(updatedLat)) updatedLat = existingSpot.latitude;
+    if (isNaN(updatedLon)) updatedLon = existingSpot.longitude;
+    if (isNaN(updatedPrice)) updatedPrice = existingSpot.price_per_minute;
+
+    // Resolver disponibilidad (puede venir como string "true"/"false" o boolean)
+    let updatedAvailability = existingSpot.is_available;
+    const targetAvailability = availability !== undefined ? availability : is_available;
+    if (targetAvailability !== undefined) {
+      updatedAvailability = targetAvailability === "true" || targetAvailability === true;
+    }
+
+    // 4. Ejecutar la actualización en la BD
+    const updateQuery = `
+      UPDATE parking_spots
+      SET title = $1, description = $2, address = $3, latitude = $4, longitude = $5, price_per_minute = $6, image_url = $7, is_available = $8
+      WHERE id = $9
+      RETURNING *
+    `;
+
+    const values = [
+      updatedTitle,
+      updatedDescription,
+      updatedAddress,
+      updatedLat,
+      updatedLon,
+      updatedPrice,
+      imageUrl,
+      updatedAvailability,
+      parseInt(cleanSpotId)
+    ];
+
+    const result = await pool.query(updateQuery, values);
+    const updatedSpot = result.rows[0];
+
+    console.log(`✅ Estacionamiento ID ${updatedSpot.id} actualizado con éxito.`);
+
+    // 5. Devolver el objeto formateado con compatibilidad total de imágenes
+    res.json({
+      id: "spot_" + updatedSpot.id,
+      title: updatedSpot.title,
+      address: updatedSpot.address,
+      commune: updatedSpot.address.split(",")[1]?.trim() || "Santiago",
+      location: updatedSpot.address,
+      latitude: updatedSpot.latitude,
+      longitude: updatedSpot.longitude,
+      pricePerMinute: parseInt(updatedSpot.price_per_minute),
+      description: updatedSpot.description,
+      availability: updatedSpot.is_available,
+      rating: 5.0,
+      reviews: 0,
+      amenities: ["Seguridad 24/7", "Techado"],
+      image_url: updatedSpot.image_url,
+      imageUrl: updatedSpot.image_url,
+      image: updatedSpot.image_url,
+      images: updatedSpot.image_url ? [updatedSpot.image_url] : []
+    });
+
+  } catch (error) {
+    console.error("❌ Error al actualizar estacionamiento:", error);
+    res.status(500).json({ error: "Error interno al actualizar el estacionamiento" });
+  }
+};
+
+// Registrar rutas de actualización (soportando múltiples formatos y verbos por compatibilidad)
+app.put("/api/spots/:id", upload.single("image"), handleUpdateSpot);
+app.patch("/api/spots/:id", upload.single("image"), handleUpdateSpot);
+app.post("/api/spots/:id", upload.single("image"), handleUpdateSpot);
+app.put("/api/spots", upload.single("image"), handleUpdateSpot);
+app.post("/api/spots/update", upload.single("image"), handleUpdateSpot);
 
 // =========================================================================
 // 3. ENDPOINTS: Reservas (bookings)
@@ -327,9 +490,9 @@ app.post("/api/prices/suggest", async (req, res) => {
       const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos((lat1 * Math.PI) / 180) *
-          Math.cos((lat2 * Math.PI) / 180) *
-          Math.sin(dLon / 2) *
-          Math.sin(dLon / 2);
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 

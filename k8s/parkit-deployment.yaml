@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: parkit-node
-          image: postgres/parkit-backend:latest
+          image: parkit-backend:latest
           ports:
             - containerPort: 3000
 ---
